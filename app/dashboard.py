@@ -58,8 +58,11 @@ elif os.path.exists(combined_model_path):
     model = joblib.load(combined_model_path)
     model_label = "combined multi-ticker model"
 else:
-    st.error("No trained model found. Run models/train_model.py first.")
-    st.stop()
+    with st.spinner("Training model for the first time — this takes ~30 seconds..."):
+        from models.train_model import train
+        train(ticker=None)
+    model = joblib.load(combined_model_path)
+    model_label = "combined multi-ticker model"
 
 st.caption(f"Using {model_label}")
 
