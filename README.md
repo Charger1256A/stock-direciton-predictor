@@ -33,6 +33,10 @@ source venv/bin/activate        # Windows: venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
+macOS only: XGBoost needs the OpenMP runtime, which isn't bundled.
+If `import xgboost` fails with a `libomp.dylib` error, run
+`brew install libomp`.
+
 ## Run the pipeline
 
 ```bash
@@ -46,10 +50,16 @@ python features/build_features.py
 python models/train_model.py --all
 # or, for a single ticker:
 python models/train_model.py --ticker AAPL
+# choose the model type (rf / hist_gb / xgboost), default is rf:
+python models/train_model.py --all --model xgboost
 
 # 4. Launch the dashboard
 streamlit run app/dashboard.py
 ```
+
+The dashboard also lets you pick the model type from a dropdown. If a
+model for the selected ticker/type combination hasn't been trained yet,
+it trains one on the fly and shows a status indicator while it works.
 
 ## What's actually going on here
 
@@ -71,7 +81,8 @@ streamlit run app/dashboard.py
 
 ## Ideas to extend it (pick 1-2, don't do all of them)
 
-- Swap Random Forest for XGBoost/LightGBM and compare.
+- Add LightGBM as another `--model` option alongside Random Forest,
+  Histogram Gradient Boosting, and XGBoost, and compare.
 - Add a walk-forward validation loop instead of a single train/test split,
   to see how stable performance is across different time windows.
 - Add sentiment features from news headlines or earnings call transcripts.

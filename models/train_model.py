@@ -12,6 +12,9 @@ Key design choices (worth understanding, not just running):
       interactions well, gives feature importances for free, and doesn't
       need feature scaling. A reasonable starting point before reaching for
       anything more complex.
+    - Also selectable: HistGradientBoostingClassifier (sklearn's built-in
+      gradient boosting, no extra dependency) and XGBoost, both of which
+      tend to outperform Random Forest on tabular data like this.
     - Backtest: converts the classifier's predictions into a simple trading
       signal (long when predicted up, flat otherwise) and compares
       cumulative returns against a buy-and-hold baseline. This is what
@@ -20,6 +23,7 @@ Key design choices (worth understanding, not just running):
 Usage:
     python models/train_model.py --ticker AAPL
     python models/train_model.py --all   # train on combined multi-ticker data
+    python models/train_model.py --all --model xgboost
 """
 
 import os
@@ -27,11 +31,60 @@ import argparse
 import joblib
 import numpy as np
 import pandas as pd
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import RandomForestClassifier, HistGradientBoostingClassifier
 from sklearn.metrics import accuracy_score, precision_score, classification_report
+from xgboost import XGBClassifier
 
 FEATURES_DIR = os.path.join(os.path.dirname(__file__), "..", "features", "processed")
 MODEL_OUT_DIR = os.path.join(os.path.dirname(__file__), "saved")
+
+MODEL_TYPES = ["rf", "hist_gb", "xgboost"]
+MODEL_LABELS = {
+    "rf": "Random Forest",
+    "hist_gb": "Histogram Gradient Boosting",
+    "xgboost": "XGBoost",
+}
+
+
+def build_model(model_type: str):
+    if model_type == "rf":
+        return RandomForestClassifier(
+            n_estimators=200,
+            max_depth=6,
+            min_samples_leaf=20,   # guards against overfitting on noisy price data
+            random_state=42,
+        )
+    elif model_type == "hist_gb":
+        return HistGradientBoostingClassifier(
+            max_depth=6,
+            min_samples_leaf=20,
+            random_state=42,
+        )
+    elif model_type == "xgboost":
+        return XGBClassifier(
+            n_estimators=200,
+            max_depth=6,
+            learning_rate=0.05,
+            random_state=42,
+            eval_metric="logloss",
+        )
+    else:
+        raise ValueError(f"Unknown model_type: {model_type}. Choose from {MODEL_TYPES}.")
+
+
+def get_feature_importances(model, X_test, y_test) -> pd.Series:
+    """
+    RandomForest and XGBoost expose feature_importances_ directly.
+    HistGradientBoostingClassifier doesn't, so fall back to permutation
+    importance (computed on the held-out test set) in that case.
+    """
+    if hasattr(model, "feature_importances_"):
+        importances = pd.Series(model.feature_importances_, index=FEATURE_COLUMNS)
+    else:
+        from sklearn.inspection import permutation_importance
+        result = permutation_importance(model, X_test, y_test, n_repeats=10, random_state=42)
+        importances = pd.Series(result.importances_mean, index=FEATURE_COLUMNS)
+    return importances.sort_values(ascending=False)
 
 FEATURE_COLUMNS = [
     "sma_10", "sma_50", "ema_12", "ema_26",
@@ -84,19 +137,14 @@ def backtest(test_df: pd.DataFrame, predictions: np.ndarray) -> dict:
     }
 
 
-def train(ticker: str = None):
+def train(ticker: str = None, model_type: str = "rf"):
     df = load_data(ticker)
     train_df, test_df = time_based_split(df)
 
     X_train, y_train = train_df[FEATURE_COLUMNS], train_df["direction"]
     X_test, y_test = test_df[FEATURE_COLUMNS], test_df["direction"]
 
-    model = RandomForestClassifier(
-        n_estimators=200,
-        max_depth=6,
-        min_samples_leaf=20,   # guards against overfitting on noisy price data
-        random_state=42,
-    )
+    model = build_model(model_type)
     model.fit(X_train, y_train)
 
     preds = model.predict(X_test)
@@ -114,14 +162,13 @@ def train(ticker: str = None):
     print(f"Strategy cumulative return:  {bt['strategy_cumulative_return']:.2%}")
     print(f"Buy-and-hold cumulative return: {bt['buy_hold_cumulative_return']:.2%}")
 
-    importances = pd.Series(model.feature_importances_, index=FEATURE_COLUMNS)
-    importances = importances.sort_values(ascending=False)
+    importances = get_feature_importances(model, X_test, y_test)
     print("\n=== Feature importances ===")
     print(importances.to_string())
 
     os.makedirs(MODEL_OUT_DIR, exist_ok=True)
     label = ticker if ticker else "combined"
-    model_path = os.path.join(MODEL_OUT_DIR, f"model_{label}.joblib")
+    model_path = os.path.join(MODEL_OUT_DIR, f"model_{label}_{model_type}.joblib")
     joblib.dump(model, model_path)
     print(f"\nSaved trained model to {model_path}")
 
@@ -132,12 +179,16 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--ticker", type=str, default=None, help="Train on a single ticker's feature file")
     parser.add_argument("--all", action="store_true", help="Train on combined multi-ticker feature file")
+    parser.add_argument(
+        "--model", type=str, default="rf", choices=MODEL_TYPES,
+        help="Which model to train: rf (Random Forest), hist_gb (Histogram Gradient Boosting), or xgboost",
+    )
     args = parser.parse_args()
 
     if args.all or not args.ticker:
-        train(ticker=None)
+        train(ticker=None, model_type=args.model)
     else:
-        train(ticker=args.ticker)
+        train(ticker=args.ticker, model_type=args.model)
 
 
 if __name__ == "__main__":
